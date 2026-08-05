@@ -163,163 +163,6 @@ def earnings(ticker,cfg):
             if v is not None:return pd.Timestamp(v).date()
     except Exception:pass
     return None
-
-def decision_checklist(ticker, s, earn, cfg):
-    risk = cfg["risk"]
-    days_to_earnings = (earn - date.today()).days if earn else None
-    checks = []
-
-    def add(name, passed, actual, rule, importance="Normal", blocker=False, caution=False):
-        if blocker and not passed:
-            status = "BLOCK"
-        elif caution:
-            status = "CAUTION"
-        else:
-            status = "PASS" if passed else "FAIL"
-        checks.append({
-            "Status": status,
-            "Condition": name,
-            "Actual": actual,
-            "Required / Preferred": rule,
-            "Importance": importance,
-            "Hard Blocker": bool(blocker and not passed),
-        })
-
-    add(
-        "No sharp downside move",
-        s["day_pct"] > risk["hard_red_drop_pct"],
-        f"{s['day_pct']:+.2f}%",
-        f"Must be above {risk['hard_red_drop_pct']:.0f}%",
-        "Critical",
-        blocker=True,
-    )
-    add(
-        "VIX is not spiking",
-        s["vix_day_pct"] < risk["vix_jump_pct"],
-        f"{s['vix_day_pct']:+.2f}%",
-        f"VIX daily move below +{risk['vix_jump_pct']:.0f}%",
-        "Critical",
-        blocker=True,
-    )
-    add(
-        "Market and sector are not both weak",
-        bool(s["benchmark_trend"] or s["sector_trend"]),
-        f"Benchmark {'PASS' if s['benchmark_trend'] else 'FAIL'} / Sector {'PASS' if s['sector_trend'] else 'FAIL'}",
-        "At least one trend above 20 EMA",
-        "Critical",
-        blocker=True,
-    )
-    add(
-        "Strong up day",
-        s["day_pct"] >= risk["strong_rise_pct"],
-        f"{s['day_pct']:+.2f}%",
-        f"Preferred: at least +{risk['strong_rise_pct']:.0f}%",
-        "High",
-    )
-    add(
-        "Multi-day run-up",
-        s["up_run"] >= 2,
-        f"{s['up_run']} consecutive up days",
-        "Preferred: 2 or more days",
-        "High",
-    )
-    add(
-        "Near resistance / recent high",
-        s["dist_high_pct"] <= 8,
-        f"{s['dist_high_pct']:.1f}% below 60-day high",
-        "Preferred: within 8%",
-        "High",
-    )
-    add(
-        "RSI is elevated",
-        s["rsi"] >= risk["rsi_hot"],
-        f"RSI {s['rsi']:.1f}",
-        f"Preferred: RSI at least {risk['rsi_hot']}",
-        "Medium",
-    )
-    add(
-        "Sector trend supports the trade",
-        bool(s["sector_trend"]),
-        "Above 20 EMA" if s["sector_trend"] else "Below 20 EMA",
-        "Preferred: above 20 EMA",
-        "High",
-    )
-    add(
-        "Benchmark trend supports the trade",
-        bool(s["benchmark_trend"]),
-        "Above 20 EMA" if s["benchmark_trend"] else "Below 20 EMA",
-        "Preferred: above 20 EMA",
-        "Medium",
-    )
-    add(
-        "VIX level is controlled",
-        s["vix"] < 24,
-        f"VIX {s['vix']:.1f}",
-        "Preferred: below 24",
-        "Medium",
-        caution=(24 <= s["vix"] < 30),
-    )
-
-    if days_to_earnings is None:
-        checks.append({
-            "Status": "CAUTION",
-            "Condition": "Earnings date confirmed",
-            "Actual": "Unavailable",
-            "Required / Preferred": "Confirm before opening a new CC",
-            "Importance": "High",
-            "Hard Blocker": False,
-        })
-    else:
-        add(
-            "Earnings timing is favorable",
-            0 <= days_to_earnings <= 2,
-            f"{days_to_earnings} days to earnings",
-            "Trading CC preferred 1–2 days before earnings",
-            "Medium",
-            caution=(3 <= days_to_earnings <= 7),
-        )
-
-    add(
-        "Quote is current",
-        not s["is_stale"],
-        f"{s['quote_age_minutes']:.0f} minutes old",
-        "Preferred: under 20 minutes",
-        "Critical",
-        caution=s["is_stale"],
-    )
-
-    return pd.DataFrame(checks)
-
-
-def checklist_summary(checks):
-    hard_blockers = int(checks["Hard Blocker"].fillna(False).sum())
-    passes = int((checks["Status"] == "PASS").sum())
-    fails = int((checks["Status"] == "FAIL").sum())
-    cautions = int((checks["Status"] == "CAUTION").sum())
-
-    if hard_blockers > 0:
-        decision = "NO NEW CC"
-        explanation = f"{hard_blockers} hard blocker(s) must clear first."
-    elif passes >= 6:
-        decision = "CC SETUP VALID"
-        explanation = "Most important conditions are present. Contract quality still needs approval."
-    elif passes >= 4:
-        decision = "WAIT / CONSERVATIVE ONLY"
-        explanation = "The setup is incomplete. Only consider a very conservative contract."
-    else:
-        decision = "NO TRADE"
-        explanation = "Too few favorable conditions are present."
-
-    return {
-        "hard_blockers": hard_blockers,
-        "passes": passes,
-        "fails": fails,
-        "cautions": cautions,
-        "decision": decision,
-        "explanation": explanation,
-    }
-
-
 def grade(s,earn,cfg):
     r=cfg['risk'];score=45;pos=[];warn=[];block=[];days=(earn-date.today()).days if earn else None
     if s['day_pct']<=r['hard_red_drop_pct']:block.append(f"Price down {s['day_pct']:.1f}%")
@@ -570,3 +413,93 @@ def manage_pro(pos,ticker,x,spot,cfg):
 
     return pd.DataFrame(rows)
 
+
+
+def simple_cc_decision(ticker, s, earn, cfg):
+    """
+    Four-core-factor decision engine.
+    The output is intentionally simple: GREEN / YELLOW / RED,
+    four checks, and one plain-English conclusion.
+    """
+    risk = cfg["risk"]
+    days_to_earnings = (earn - date.today()).days if earn else None
+
+    checks = []
+
+    def add(label, status, detail):
+        checks.append({"label": label, "status": status, "detail": detail})
+
+    # 1. Price action
+    if s["day_pct"] <= -5:
+        add("Price Action", "RED", f"Sharp sell-off: {s['day_pct']:+.1f}%")
+    elif s["day_pct"] <= -3:
+        add("Price Action", "YELLOW", f"Weak day: {s['day_pct']:+.1f}%")
+    elif s["day_pct"] >= 3:
+        add("Price Action", "GREEN", f"Strong up day: {s['day_pct']:+.1f}%")
+    else:
+        add("Price Action", "YELLOW", f"Neutral move: {s['day_pct']:+.1f}%")
+
+    # 2. Setup: run-up or resistance
+    if s["up_run"] >= 2:
+        add("CC Setup", "GREEN", f"{s['up_run']} consecutive up days")
+    elif s["dist_high_pct"] <= 8:
+        add("CC Setup", "GREEN", f"Only {s['dist_high_pct']:.1f}% below 60-day high")
+    elif s["rsi"] < 50:
+        add("CC Setup", "RED", f"RSI {s['rsi']:.0f}: weak / rebound risk")
+    else:
+        add("CC Setup", "YELLOW", "No clear run-up or resistance setup")
+
+    # 3. Market trend
+    if not s["benchmark_trend"] and not s["sector_trend"]:
+        add("Market Trend", "RED", "Benchmark and sector are both below 20 EMA")
+    elif s["benchmark_trend"] and s["sector_trend"]:
+        add("Market Trend", "GREEN", "Benchmark and sector both support the trade")
+    else:
+        add("Market Trend", "YELLOW", "Market support is mixed")
+
+    # 4. Risk / event
+    if s["vix_day_pct"] >= risk["vix_jump_pct"]:
+        add("Risk / Event", "RED", f"VIX spiked {s['vix_day_pct']:+.1f}%")
+    elif s["is_stale"]:
+        add("Risk / Event", "YELLOW", "Quote may be stale")
+    elif days_to_earnings is not None and 0 <= days_to_earnings <= 2:
+        add("Risk / Event", "GREEN", f"Earnings in {days_to_earnings} day(s): event premium")
+    elif s["vix"] < 24:
+        add("Risk / Event", "GREEN", f"VIX controlled at {s['vix']:.1f}")
+    else:
+        add("Risk / Event", "YELLOW", f"VIX elevated at {s['vix']:.1f}")
+
+    statuses = [c["status"] for c in checks]
+    red_count = statuses.count("RED")
+    green_count = statuses.count("GREEN")
+
+    hard_red = (
+        s["day_pct"] <= -5
+        or (not s["benchmark_trend"] and not s["sector_trend"])
+        or s["vix_day_pct"] >= risk["vix_jump_pct"]
+    )
+
+    if hard_red:
+        light = "RED"
+        action = "DO NOT SELL A NEW CC"
+        core = next(c["detail"] for c in checks if c["status"] == "RED")
+        conclusion = (
+            f"{core}. Wait for price stabilization or a rebound before selling a new CC."
+        )
+    elif green_count >= 3 and red_count == 0:
+        light = "GREEN"
+        action = "NEW CC IS ALLOWED"
+        positives = [c["detail"] for c in checks if c["status"] == "GREEN"][:2]
+        conclusion = " / ".join(positives) + ". Use only a low-Delta contract."
+    else:
+        light = "YELLOW"
+        action = "WAIT OR USE ONE VERY CONSERVATIVE CC"
+        missing = [c["detail"] for c in checks if c["status"] != "GREEN"][:2]
+        conclusion = " / ".join(missing) + ". There is no strong reason to force a trade."
+
+    return {
+        "light": light,
+        "action": action,
+        "conclusion": conclusion,
+        "checks": checks,
+    }
