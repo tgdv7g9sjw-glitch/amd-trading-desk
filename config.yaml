@@ -1,35 +1,38 @@
-ticker: AMD
-benchmark: QQQ
-sector_etf: SMH
+system:
+  monthly_income_target: 5000
+  annual_income_target: 48000
+  auto_refresh_minutes: 5
+stocks:
+  AMD: {name: AMD, benchmark: QQQ, sector_etf: SMH, max_cc: 4, minimum_otm_pct: 20, protected_strike: 900, income_role: Core income engine}
+  HIMS: {name: Hims & Hers, benchmark: QQQ, sector_etf: XLY, max_cc: 4, minimum_otm_pct: 15, protected_strike: 0, income_role: High-IV tactical income}
+  TSLA: {name: Tesla, benchmark: QQQ, sector_etf: XLY, max_cc: 1, minimum_otm_pct: 20, protected_strike: 0, income_role: Momentum-only income}
+  NOW: {name: ServiceNow, benchmark: QQQ, sector_etf: IGV, max_cc: 1, minimum_otm_pct: 15, protected_strike: 0, income_role: Conservative income}
 vix_ticker: ^VIX
-
-portfolio:
-  leaps_contracts: 5
-  max_covered_calls: 4
-  reserve_uncovered_leaps: 1
-
-policy:
-  minimum_otm_pct: 20
-  protected_strike: 900
+new_cc:
   short_dte: [7, 12]
-  medium_dte: [21, 40]
-  long_dte: [90, 240]
   short_delta: [0.08, 0.18]
+  medium_dte: [21, 40]
   medium_delta: [0.07, 0.16]
+  long_dte: [90, 180]
   long_delta: [0.04, 0.12]
   minimum_open_interest: 10
   maximum_spread_pct: 30
-  take_profit_consider_pct: 40
-  take_profit_priority_pct: 60
-  roll_alert_distance_pct: 7
-  roll_alert_dte: 10
-
+management:
+  short_dte_max: 10
+  short_profit_consider_pct: 60
+  short_profit_priority_pct: 70
+  long_dte_min: 30
+  long_dte_max: 180
+  delta_ignore_below: 0.20
+  delta_watch_below: 0.30
+  delta_prepare_roll_below: 0.40
+  delta_priority_roll_at: 0.40
+  trading_profit_trigger_pct: 60
+  trading_delta_trigger: 0.05
 risk:
   hard_red_drop_pct: -7
   strong_rise_pct: 5
   vix_jump_pct: 10
   rsi_hot: 68
   rsi_very_hot: 75
-
-manual:
-  next_earnings_date: ""
+manual_earnings: {AMD: '', HIMS: '', TSLA: '', NOW: ''}
