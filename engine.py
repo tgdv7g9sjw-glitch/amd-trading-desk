@@ -163,6 +163,163 @@ def earnings(ticker,cfg):
             if v is not None:return pd.Timestamp(v).date()
     except Exception:pass
     return None
+
+def decision_checklist(ticker, s, earn, cfg):
+    risk = cfg["risk"]
+    days_to_earnings = (earn - date.today()).days if earn else None
+    checks = []
+
+    def add(name, passed, actual, rule, importance="Normal", blocker=False, caution=False):
+        if blocker and not passed:
+            status = "BLOCK"
+        elif caution:
+            status = "CAUTION"
+        else:
+            status = "PASS" if passed else "FAIL"
+        checks.append({
+            "Status": status,
+            "Condition": name,
+            "Actual": actual,
+            "Required / Preferred": rule,
+            "Importance": importance,
+            "Hard Blocker": bool(blocker and not passed),
+        })
+
+    add(
+        "No sharp downside move",
+        s["day_pct"] > risk["hard_red_drop_pct"],
+        f"{s['day_pct']:+.2f}%",
+        f"Must be above {risk['hard_red_drop_pct']:.0f}%",
+        "Critical",
+        blocker=True,
+    )
+    add(
+        "VIX is not spiking",
+        s["vix_day_pct"] < risk["vix_jump_pct"],
+        f"{s['vix_day_pct']:+.2f}%",
+        f"VIX daily move below +{risk['vix_jump_pct']:.0f}%",
+        "Critical",
+        blocker=True,
+    )
+    add(
+        "Market and sector are not both weak",
+        bool(s["benchmark_trend"] or s["sector_trend"]),
+        f"Benchmark {'PASS' if s['benchmark_trend'] else 'FAIL'} / Sector {'PASS' if s['sector_trend'] else 'FAIL'}",
+        "At least one trend above 20 EMA",
+        "Critical",
+        blocker=True,
+    )
+    add(
+        "Strong up day",
+        s["day_pct"] >= risk["strong_rise_pct"],
+        f"{s['day_pct']:+.2f}%",
+        f"Preferred: at least +{risk['strong_rise_pct']:.0f}%",
+        "High",
+    )
+    add(
+        "Multi-day run-up",
+        s["up_run"] >= 2,
+        f"{s['up_run']} consecutive up days",
+        "Preferred: 2 or more days",
+        "High",
+    )
+    add(
+        "Near resistance / recent high",
+        s["dist_high_pct"] <= 8,
+        f"{s['dist_high_pct']:.1f}% below 60-day high",
+        "Preferred: within 8%",
+        "High",
+    )
+    add(
+        "RSI is elevated",
+        s["rsi"] >= risk["rsi_hot"],
+        f"RSI {s['rsi']:.1f}",
+        f"Preferred: RSI at least {risk['rsi_hot']}",
+        "Medium",
+    )
+    add(
+        "Sector trend supports the trade",
+        bool(s["sector_trend"]),
+        "Above 20 EMA" if s["sector_trend"] else "Below 20 EMA",
+        "Preferred: above 20 EMA",
+        "High",
+    )
+    add(
+        "Benchmark trend supports the trade",
+        bool(s["benchmark_trend"]),
+        "Above 20 EMA" if s["benchmark_trend"] else "Below 20 EMA",
+        "Preferred: above 20 EMA",
+        "Medium",
+    )
+    add(
+        "VIX level is controlled",
+        s["vix"] < 24,
+        f"VIX {s['vix']:.1f}",
+        "Preferred: below 24",
+        "Medium",
+        caution=(24 <= s["vix"] < 30),
+    )
+
+    if days_to_earnings is None:
+        checks.append({
+            "Status": "CAUTION",
+            "Condition": "Earnings date confirmed",
+            "Actual": "Unavailable",
+            "Required / Preferred": "Confirm before opening a new CC",
+            "Importance": "High",
+            "Hard Blocker": False,
+        })
+    else:
+        add(
+            "Earnings timing is favorable",
+            0 <= days_to_earnings <= 2,
+            f"{days_to_earnings} days to earnings",
+            "Trading CC preferred 1–2 days before earnings",
+            "Medium",
+            caution=(3 <= days_to_earnings <= 7),
+        )
+
+    add(
+        "Quote is current",
+        not s["is_stale"],
+        f"{s['quote_age_minutes']:.0f} minutes old",
+        "Preferred: under 20 minutes",
+        "Critical",
+        caution=s["is_stale"],
+    )
+
+    return pd.DataFrame(checks)
+
+
+def checklist_summary(checks):
+    hard_blockers = int(checks["Hard Blocker"].fillna(False).sum())
+    passes = int((checks["Status"] == "PASS").sum())
+    fails = int((checks["Status"] == "FAIL").sum())
+    cautions = int((checks["Status"] == "CAUTION").sum())
+
+    if hard_blockers > 0:
+        decision = "NO NEW CC"
+        explanation = f"{hard_blockers} hard blocker(s) must clear first."
+    elif passes >= 6:
+        decision = "CC SETUP VALID"
+        explanation = "Most important conditions are present. Contract quality still needs approval."
+    elif passes >= 4:
+        decision = "WAIT / CONSERVATIVE ONLY"
+        explanation = "The setup is incomplete. Only consider a very conservative contract."
+    else:
+        decision = "NO TRADE"
+        explanation = "Too few favorable conditions are present."
+
+    return {
+        "hard_blockers": hard_blockers,
+        "passes": passes,
+        "fails": fails,
+        "cautions": cautions,
+        "decision": decision,
+        "explanation": explanation,
+    }
+
+
 def grade(s,earn,cfg):
     r=cfg['risk'];score=45;pos=[];warn=[];block=[];days=(earn-date.today()).days if earn else None
     if s['day_pct']<=r['hard_red_drop_pct']:block.append(f"Price down {s['day_pct']:.1f}%")
@@ -243,26 +400,173 @@ def income_summary(journal,cfg):
     now=pd.Timestamp.today();m=j[(j.close_ts.dt.year==now.year)&(j.close_ts.dt.month==now.month)];y=j[j.close_ts.dt.year==now.year]
     return {'monthly':float(m.realized_pnl.sum()),'ytd':float(y.realized_pnl.sum()),'monthly_target':cfg['system']['monthly_income_target'],'annual_target':cfg['system']['annual_income_target'],'by_stock':y.groupby('ticker').realized_pnl.sum().sort_values(ascending=False)}
 
+
+def live_contract_quote(chain_df, expiry_value, strike_value):
+    """
+    Match an open call against the live option chain.
+    Returns live mid, delta and quote source. Falls back cleanly if unavailable.
+    """
+    expiry_ts = parse_ddmmyy(expiry_value)
+    strike = pd.to_numeric(strike_value, errors="coerce")
+
+    if chain_df is None or chain_df.empty or pd.isna(expiry_ts) or pd.isna(strike):
+        return np.nan, np.nan, "Manual fallback"
+
+    expiry_iso = str(expiry_ts.date())
+    expiry_series = chain_df["expiry"].astype(str)
+    strike_series = pd.to_numeric(chain_df["strike"], errors="coerce")
+
+    matched = chain_df[
+        (expiry_series == expiry_iso) &
+        (np.isclose(strike_series, float(strike), atol=0.001))
+    ]
+
+    if matched.empty:
+        return np.nan, np.nan, "Manual fallback"
+
+    row = matched.iloc[0]
+    bid = pd.to_numeric(row.get("bid"), errors="coerce")
+    ask = pd.to_numeric(row.get("ask"), errors="coerce")
+    last = pd.to_numeric(row.get("lastPrice"), errors="coerce")
+    stored_mid = pd.to_numeric(row.get("mid"), errors="coerce")
+    delta = pd.to_numeric(row.get("delta"), errors="coerce")
+
+    if pd.notna(bid) and pd.notna(ask) and bid > 0 and ask > 0:
+        mid = (float(bid) + float(ask)) / 2
+        source = "Live Bid/Ask Mid"
+    elif pd.notna(stored_mid) and stored_mid >= 0:
+        mid = float(stored_mid)
+        source = "Option Chain Mid"
+    elif pd.notna(last) and last >= 0:
+        mid = float(last)
+        source = "Last Trade"
+    else:
+        mid = np.nan
+        source = "Manual fallback"
+
+    return mid, (float(delta) if pd.notna(delta) else np.nan), source
+
+
 def manage_pro(pos,ticker,x,spot,cfg):
-    p=pos[pos.ticker.astype(str).str.upper()==ticker].copy();m=cfg['management'];rows=[]
-    for _,r in p.iterrows():
-        if str(r.status).upper()!='OPEN':
-            rows.append({**r.to_dict(),'Expiry (DDMMYY)':'','Days Remaining':np.nan,'Current Delta':np.nan,'Profit %':np.nan,'System Action':'EMPTY','Action Reason':'Position is empty'});continue
-        exp=parse_ddmmyy(r.expiry);strike=pd.to_numeric(r.strike,errors='coerce');credit=pd.to_numeric(r.credit_received,errors='coerce');mark=pd.to_numeric(r.current_mark,errors='coerce');dte=(exp.normalize()-pd.Timestamp.today().normalize()).days if pd.notna(exp) else np.nan;profit=(credit-mark)/credit*100 if pd.notna(credit) and credit>0 and pd.notna(mark) else np.nan
-        z=x[(x.expiry.astype(str)==str(exp.date()))&(x.strike==strike)] if not x.empty and pd.notna(exp) and pd.notna(strike) else pd.DataFrame();delta=float(z.iloc[0].delta) if not z.empty else np.nan
-        purpose=str(r.get('purpose','Income')).title();done=str(r.get('event_completed',False)).lower() in {'true','1','yes'}
-        if purpose=='Trading':
-            triggers=[]
-            if done:triggers.append('Event completed')
-            if pd.notna(profit) and profit>=m['trading_profit_trigger_pct']:triggers.append(f'Profit {profit:.0f}%')
-            if pd.notna(delta) and delta<m['trading_delta_trigger']:triggers.append(f'Delta {delta:.2f}<0.05')
-            action='BTC NOW' if triggers else 'HOLD';reason=('Trading alpha completed: '+', '.join(triggers)) if triggers else 'Trading event thesis is still active'
-        elif purpose=='Defensive':
-            action='CONSIDER BTC' if pd.notna(delta) and delta<.10 else 'HOLD';reason='Defensive objective is largely complete' if action!='HOLD' else 'Defensive objective remains active'
-        elif pd.notna(dte) and dte<=10:
-            action='BTC NOW' if pd.notna(profit) and profit>=70 else ('CONSIDER BTC' if pd.notna(profit) and profit>=60 else 'HOLD');reason='Short-dated income CC is managed by profit target'
-        elif pd.notna(dte) and 30<=dte<=180:
-            action='CHECK DELTA' if pd.isna(delta) else ('IGNORE / HOLD' if delta<.20 else ('WATCH' if delta<.30 else ('PREPARE ROLL' if delta<.40 else 'PRIORITY ROLL / CLOSE')));reason=f'Income CC is managed primarily by Delta {delta:.2f}' if pd.notna(delta) else 'Delta is temporarily unavailable'
-        else:action,reason='WATCH','DTE is outside the primary rule set'
-        rows.append({**r.to_dict(),'Expiry (DDMMYY)':fmt_date(exp),'Days Remaining':dte,'Current Delta':delta,'Profit %':profit,'System Action':action,'Action Reason':reason})
+    p = pos[pos.ticker.astype(str).str.upper() == ticker].copy()
+    m = cfg["management"]
+    rows = []
+
+    for _, r in p.iterrows():
+        if str(r.status).upper() != "OPEN":
+            rows.append({
+                **r.to_dict(),
+                "Expiry (DDMMYY)": "",
+                "Days Remaining": np.nan,
+                "Live Mark": np.nan,
+                "Mark Source": "",
+                "Current Delta": np.nan,
+                "Profit %": np.nan,
+                "Unrealized P/L": np.nan,
+                "System Action": "EMPTY",
+                "Action Reason": "Position is empty",
+            })
+            continue
+
+        exp = parse_ddmmyy(r.expiry)
+        credit = pd.to_numeric(r.credit_received, errors="coerce")
+        manual_mark = pd.to_numeric(r.current_mark, errors="coerce")
+        contracts = pd.to_numeric(r.contracts, errors="coerce")
+        dte = (
+            (exp.normalize() - pd.Timestamp.today().normalize()).days
+            if pd.notna(exp) else np.nan
+        )
+
+        live_mark, delta, mark_source = live_contract_quote(
+            x, r.expiry, r.strike
+        )
+        effective_mark = live_mark if pd.notna(live_mark) else manual_mark
+
+        profit = (
+            (credit - effective_mark) / credit * 100
+            if pd.notna(credit) and credit > 0 and pd.notna(effective_mark)
+            else np.nan
+        )
+        unrealized = (
+            (credit - effective_mark) * contracts * 100
+            if pd.notna(credit) and pd.notna(effective_mark) and pd.notna(contracts)
+            else np.nan
+        )
+
+        purpose = str(r.get("purpose", "Income")).title()
+        done = str(r.get("event_completed", False)).lower() in {
+            "true", "1", "yes"
+        }
+
+        if purpose == "Trading":
+            triggers = []
+            if done:
+                triggers.append("Event completed")
+            if pd.notna(profit) and profit >= m["trading_profit_trigger_pct"]:
+                triggers.append(f"Profit {profit:.0f}%")
+            if pd.notna(delta) and delta < m["trading_delta_trigger"]:
+                triggers.append(f"Delta {delta:.2f} < 0.05")
+
+            action = "BTC NOW" if triggers else "HOLD"
+            reason = (
+                "Trading alpha completed: " + ", ".join(triggers)
+                if triggers else "Trading event thesis is still active"
+            )
+
+        elif purpose == "Defensive":
+            action = (
+                "CONSIDER BTC"
+                if pd.notna(delta) and delta < 0.10
+                else "HOLD"
+            )
+            reason = (
+                "Defensive objective is largely complete"
+                if action != "HOLD"
+                else "Defensive objective remains active"
+            )
+
+        elif pd.notna(dte) and dte <= 10:
+            if pd.notna(profit) and profit >= 70:
+                action = "BTC NOW"
+            elif pd.notna(profit) and profit >= 60:
+                action = "CONSIDER BTC"
+            else:
+                action = "HOLD"
+            reason = "Short-dated income CC is managed by profit target"
+
+        elif pd.notna(dte) and 30 <= dte <= 180:
+            if pd.isna(delta):
+                action = "CHECK DELTA"
+                reason = "Delta is temporarily unavailable"
+            elif delta < 0.20:
+                action = "IGNORE / HOLD"
+                reason = f"Income CC is managed primarily by Delta {delta:.2f}"
+            elif delta < 0.30:
+                action = "WATCH"
+                reason = f"Income CC is managed primarily by Delta {delta:.2f}"
+            elif delta < 0.40:
+                action = "PREPARE ROLL"
+                reason = f"Income CC is managed primarily by Delta {delta:.2f}"
+            else:
+                action = "PRIORITY ROLL / CLOSE"
+                reason = f"Income CC is managed primarily by Delta {delta:.2f}"
+
+        else:
+            action = "WATCH"
+            reason = "DTE is outside the primary rule set"
+
+        rows.append({
+            **r.to_dict(),
+            "Expiry (DDMMYY)": fmt_date(exp),
+            "Days Remaining": dte,
+            "Live Mark": effective_mark,
+            "Mark Source": mark_source if pd.notna(live_mark) else "Manual fallback",
+            "Current Delta": delta,
+            "Profit %": profit,
+            "Unrealized P/L": unrealized,
+            "System Action": action,
+            "Action Reason": reason,
+        })
+
     return pd.DataFrame(rows)
+
