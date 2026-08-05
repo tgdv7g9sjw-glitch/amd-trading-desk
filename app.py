@@ -5,7 +5,7 @@ import pandas as pd
 import streamlit as st
 import yaml
 from streamlit_autorefresh import st_autorefresh
-from engine import snapshot,earnings,grade,chain,recs,manage_pro,income_summary,fmt_date,parse_ddmmyy
+from engine import snapshot,earnings,grade,chain,recs,manage_pro,income_summary,fmt_date,parse_ddmmyy,decision_checklist,checklist_summary
 
 BASE=Path(__file__).resolve().parent
 st.set_page_config(page_title='OIMS v1.0',page_icon='◢',layout='wide')
@@ -112,7 +112,18 @@ section[data-testid="stSidebar"] button *{color:#FFFFFF!important}
 input, textarea{
   color:#111827!important;
 }
+
+.checklist-summary{
+  padding:18px 20px;
+  border:1px solid #3B4E6B;
+  border-radius:16px;
+  background:#111B2C;
+  margin:12px 0 16px 0;
+}
+.checklist-title{font-size:22px;font-weight:800;color:#FFF!important}
+.checklist-sub{font-size:15px;color:#CBD5E1!important;margin-top:6px}
 </style>
+
 """,unsafe_allow_html=True)
 
 pos_path=BASE/'data/positions.csv';journal_path=BASE/'data/journal.csv'
@@ -170,12 +181,42 @@ if page=='Overview':
 
 elif page=='Stocks':
  t=st.selectbox('Stock',list(cfg['stocks']))
- s,g,x,r,err,ts=load(t,cfg);r=normalize_recommendation_columns(r);icon={'GREEN':'🟢','YELLOW':'🟡','RED':'🔴'}[g['label']]
- st.markdown(f"<div class='hero'><div>{t} · {s['session']} · {ts:%d%m%y %H:%M}</div><div class='big'>{icon} {g['label']} · {g['score']}/100</div><div>{g['action']}</div></div>",unsafe_allow_html=True)
- a,b,c,d,e=st.columns(5);a.metric('Live / Extended',f"${s['spot']:.2f}",f"{s['day_pct']:+.2f}% vs {s.get('reference_close_label','Close')}");b.metric('RSI',f"{s['rsi']:.1f}");c.metric('VIX',f"{s['vix']:.1f}");d.metric('Distance to 60D High',f"{s['dist_high_pct']:.1f}%");e.metric('Quote Age',f"{s['quote_age_minutes']:.0f} min")
- tabs=st.tabs(['New CC','Existing CC','Open / Close Trade','Why'])
+ s,g,x,r,err,ts=load(t,cfg)
+ r=normalize_recommendation_columns(r)
+ icon={'GREEN':'🟢','YELLOW':'🟡','RED':'🔴'}[g['label']]
+ checklist=decision_checklist(t,s,earnings(t,cfg),cfg)
+ checklist_result=checklist_summary(checklist)
+
+ st.markdown(f"<div class='hero'><div>{t} · {s['session']} · {ts:%d%m%y %H:%M}</div><div class='big'>{checklist_result['decision']}</div><div>{checklist_result['explanation']}</div></div>",unsafe_allow_html=True)
+
+ st.subheader('Decision Checklist')
+ decision_color={'CC SETUP VALID':'#22C55E','WAIT / CONSERVATIVE ONLY':'#F59E0B','NO NEW CC':'#EF4444','NO TRADE':'#EF4444'}.get(checklist_result['decision'],'#94A3B8')
+ st.markdown(f"<div class='checklist-summary' style='border-left:6px solid {decision_color}'><div class='checklist-title'>{checklist_result['decision']}</div><div class='checklist-sub'>{checklist_result['explanation']}</div></div>",unsafe_allow_html=True)
+
+ checklist_view=checklist.copy()
+ checklist_view['Status']=checklist_view['Status'].map({'PASS':'✅ PASS','FAIL':'❌ FAIL','CAUTION':'⚠️ CAUTION','BLOCK':'🛑 BLOCK'}).fillna(checklist_view['Status'])
+ st.dataframe(checklist_view[['Status','Condition','Actual','Required / Preferred','Importance']],hide_index=True,use_container_width=True)
+
+ if checklist_result['hard_blockers']>0:
+  blockers=checklist[checklist['Hard Blocker']==True]
+  st.error('Trade blocked because: '+'; '.join(blockers['Condition'].astype(str).tolist()))
+ elif checklist_result['decision']=='WAIT / CONSERVATIVE ONLY':
+  st.warning('The setup is incomplete. Do not use a closer strike merely to reach the income target.')
+ elif checklist_result['decision']=='CC SETUP VALID':
+  st.success('The setup qualifies for contract selection. The contract must still pass Delta, OTM and liquidity checks.')
+
+ a,b,c,d,e=st.columns(5)
+ a.metric('Live / Extended',f"${s['spot']:.2f}",f"{s['day_pct']:+.2f}% vs {s.get('reference_close_label','Close')}")
+ b.metric('RSI',f"{s['rsi']:.1f}")
+ c.metric('VIX',f"{s['vix']:.1f}")
+ d.metric('Distance to 60D High',f"{s['dist_high_pct']:.1f}%")
+ e.metric('Quote Age',f"{s['quote_age_minutes']:.0f} min")
+
+ tabs=st.tabs(['New CC','Existing CC','Open / Close Trade','Decision Logic'])
  with tabs[0]:
-  if err:st.warning(err)
+  if checklist_result['hard_blockers']>0:
+   st.error('No contract recommendation is shown because the setup has a hard blocker.')
+  elif err:st.warning(err)
   elif r.empty:st.warning('No contract currently meets the Delta, OTM and liquidity rules.')
   else:
    vv=normalize_recommendation_columns(r)
@@ -198,22 +239,22 @@ elif page=='Stocks':
      )
     st.dataframe(vv,hide_index=True,use_container_width=True)
  with tabs[1]:
-  managed=manage_pro(pos,t,x,s['spot'],cfg);show=['position_id','purpose','strategy_tag','reason','Expiry (DDMMYY)','Days Remaining','strike','contracts','Profit %','Current Delta','System Action','Action Reason']
+  managed=manage_pro(pos,t,x,s['spot'],cfg);show=['position_id','purpose','strategy_tag','reason','Expiry (DDMMYY)','Days Remaining','strike','contracts','credit_received','Live Mark','Mark Source','Profit %','Unrealized P/L','Current Delta','System Action','Action Reason']
   st.dataframe(managed[[z for z in show if z in managed]],hide_index=True,use_container_width=True)
-  st.caption('Update Current Mark and Event Completed under Open / Close Trade.')
+  st.caption('Live Mark, Profit and Delta update automatically from the option chain whenever you refresh. The saved fallback mark is used only when a live contract quote is unavailable.')
  with tabs[2]:
   left,right=st.columns(2)
   with left:
    st.subheader('Open / Update CC')
    ids=pos.loc[pos.ticker==t,'position_id'].tolist();pid=st.selectbox('Position ID',ids)
-   row=pos[pos.position_id==pid].iloc[0];expiry=st.text_input('Expiry DDMMYY',value=str(row.expiry) if pd.notna(row.expiry) else '');strike=st.number_input('Strike',value=float(row.strike) if pd.notna(row.strike) else 0.0);contracts=st.number_input('Contracts',min_value=1,value=int(row.contracts) if pd.notna(row.contracts) else 1);credit=st.number_input('Premium Received (per share)',value=float(row.credit_received) if pd.notna(row.credit_received) else 0.0,step=.01);mark=st.number_input('Current Mark (per share)',value=float(row.current_mark) if pd.notna(row.current_mark) else credit,step=.01);purpose=st.selectbox('Purpose',['Trading','Income','Defensive'],index=['Trading','Income','Defensive'].index(str(row.purpose)) if str(row.purpose) in ['Trading','Income','Defensive'] else 1);tag=st.selectbox('Strategy Tag',['Earnings','Income','Momentum','Defensive','High IV','Resistance']);reason=st.text_input('Why am I selling this?',value=str(row.reason) if pd.notna(row.reason) else '');event_done=st.checkbox('Event completed / Alpha disappeared',value=str(row.event_completed).lower() in ['true','1','yes'])
+   row=pos[pos.position_id==pid].iloc[0];expiry=st.text_input('Expiry DDMMYY',value=str(row.expiry) if pd.notna(row.expiry) else '');strike=st.number_input('Strike',value=float(row.strike) if pd.notna(row.strike) else 0.0);contracts=st.number_input('Contracts',min_value=1,value=int(row.contracts) if pd.notna(row.contracts) else 1);credit=st.number_input('Premium Received (per share)',value=float(row.credit_received) if pd.notna(row.credit_received) else 0.0,step=.01);mark=st.number_input('Fallback Mark (used only if live option quote is unavailable)',value=float(row.current_mark) if pd.notna(row.current_mark) else credit,step=.01);purpose=st.selectbox('Purpose',['Trading','Income','Defensive'],index=['Trading','Income','Defensive'].index(str(row.purpose)) if str(row.purpose) in ['Trading','Income','Defensive'] else 1);tag=st.selectbox('Strategy Tag',['Earnings','Income','Momentum','Defensive','High IV','Resistance']);reason=st.text_input('Why am I selling this?',value=str(row.reason) if pd.notna(row.reason) else '');event_done=st.checkbox('Event completed / Alpha disappeared',value=str(row.event_completed).lower() in ['true','1','yes'])
    if st.button('Save Position',type='primary'):
     if not reason.strip():st.error('An entry reason is required.')
     else:
      i=pos.index[pos.position_id==pid][0];new_open=str(pos.loc[i,'status']).upper()!='OPEN';pos.loc[i,['status','expiry','strike','contracts','credit_received','current_mark','opened_date','purpose','strategy_tag','reason','event_completed']]=['OPEN',fmt_date(expiry),strike,contracts,credit,mark,datetime.now().strftime('%d%m%y'),purpose,tag,reason,event_done]
      if new_open:
       journal.loc[len(journal)]={'trade_id':str(uuid.uuid4())[:8].upper(),'open_date':datetime.now().strftime('%d%m%y'),'close_date':'','ticker':t,'expiry':fmt_date(expiry),'strike':strike,'contracts':contracts,'purpose':purpose,'strategy_tag':tag,'reason':reason,'credit_received':credit,'debit_paid':'','realized_pnl':'','status':'OPEN','entry_grade':g['label'],'entry_score':g['score'],'notes':pid}
-     save_all();st.success('Position saved and trade history updated.');st.rerun()
+     save_all();st.cache_data.clear();st.success('Position saved. Live Mark, Profit and Delta will refresh automatically.');st.rerun()
   with right:
    st.subheader('Close CC')
    open_ids=pos.loc[(pos.ticker==t)&(pos.status.astype(str).str.upper()=='OPEN'),'position_id'].tolist()
@@ -223,7 +264,7 @@ elif page=='Stocks':
     if st.button('Save Close Trade'):
      i=pos.index[pos.position_id==close_id][0];rr=pos.loc[i];pnl=(float(rr.credit_received)-debit)*float(rr.contracts)*100;ji=journal.index[(journal.status.astype(str).str.upper()=='OPEN')&(journal.notes.astype(str)==close_id)]
      if len(ji):journal.loc[ji[-1],['close_date','debit_paid','realized_pnl','status']]=[datetime.now().strftime('%d%m%y'),debit,pnl,'CLOSED']
-     pos.loc[i,['status','expiry','strike','credit_received','current_mark','opened_date','reason','event_completed','notes']]=['EMPTY','','','','','','',False,''];save_all();st.success(f'Position closed. Realized P/L ${pnl:,.0f}');st.rerun()
+     pos.loc[i,['status','expiry','strike','credit_received','current_mark','opened_date','reason','event_completed','notes']]=['EMPTY','','','','','','',False,''];save_all();st.cache_data.clear();st.success(f'Position closed. Realized P/L ${pnl:,.0f}');st.rerun()
  with tabs[3]:
   for z in g['blockers']:st.error(z)
   for z in g['positive']:st.success(z)
