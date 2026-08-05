@@ -165,27 +165,27 @@ def earnings(ticker,cfg):
     return None
 def grade(s,earn,cfg):
     r=cfg['risk'];score=45;pos=[];warn=[];block=[];days=(earn-date.today()).days if earn else None
-    if s['day_pct']<=r['hard_red_drop_pct']:block.append(f"跌 {s['day_pct']:.1f}%")
-    if s['vix_day_pct']>=r['vix_jump_pct']:block.append('VIX急升')
-    if not s['benchmark_trend'] and not s['sector_trend']:block.append('Benchmark及Sector同時轉弱')
-    if s['day_pct']>=r['strong_rise_pct']:score+=20;pos.append('升超過5%')
-    elif s['day_pct']>=2:score+=9;pos.append('即時升幅理想')
-    elif s['day_pct']<0:score-=8;warn.append('即時價低於收市')
-    if s['up_run']>=2:score+=9;pos.append(f"連升{s['up_run']}日")
-    if s['dist_high_pct']<=4:score+=14;pos.append('接近60日高')
-    elif s['dist_high_pct']<=8:score+=6;pos.append('距阻力不遠')
-    if s['rsi']>=r['rsi_very_hot']:score+=15;pos.append('RSI極熱')
-    elif s['rsi']>=r['rsi_hot']:score+=9;pos.append('RSI偏熱')
-    elif s['rsi']<48:score-=9;warn.append('RSI偏低')
+    if s['day_pct']<=r['hard_red_drop_pct']:block.append(f"Price down {s['day_pct']:.1f}%")
+    if s['vix_day_pct']>=r['vix_jump_pct']:block.append('VIX spiked sharply')
+    if not s['benchmark_trend'] and not s['sector_trend']:block.append('Benchmark and sector trend both weakened')
+    if s['day_pct']>=r['strong_rise_pct']:score+=20;pos.append('Price rose more than 5%')
+    elif s['day_pct']>=2:score+=9;pos.append('Strong intraday gain')
+    elif s['day_pct']<0:score-=8;warn.append('Live price is below the reference close')
+    if s['up_run']>=2:score+=9;pos.append(f"Up for {s['up_run']} consecutive sessions")
+    if s['dist_high_pct']<=4:score+=14;pos.append('Near the 60-day high')
+    elif s['dist_high_pct']<=8:score+=6;pos.append('Close to a major resistance area')
+    if s['rsi']>=r['rsi_very_hot']:score+=15;pos.append('RSI is extremely overbought')
+    elif s['rsi']>=r['rsi_hot']:score+=9;pos.append('RSI is elevated')
+    elif s['rsi']<48:score-=9;warn.append('RSI is weak')
     score+=6 if s['sector_trend'] else -8;score+=4 if s['benchmark_trend'] else -5
-    if days is not None and 0<=days<=2:score+=10;pos.append('財報前1–2日')
-    if s['session']=='PRE-MARKET':warn.append('盤前Grade屬暫定')
+    if days is not None and 0<=days<=2:score+=10;pos.append('Earnings in 1–2 days')
+    if s['session']=='PRE-MARKET':warn.append('Premarket grade is provisional')
     score=max(0,min(100,int(score)))
     if block:label,max_new='RED',0
     elif score>=74 and len(pos)>=3:label,max_new='GREEN',2
     elif score>=53:label,max_new='YELLOW',1
     else:label,max_new='RED',0
-    return dict(label=label,score=score,max_new=max_new,action={'GREEN':'可以考慮開CC','YELLOW':'最多1張保守CC','RED':'禁止開新CC'}[label],positive=pos,caution=warn,blockers=block,earnings=earn)
+    return dict(label=label,score=score,max_new=max_new,action={'GREEN':'New covered calls may be considered','YELLOW':'At most one conservative covered call','RED':'Do not open a new covered call'}[label],positive=pos,caution=warn,blockers=block,earnings=earn)
 def chain(ticker,cfg,spot):
     t=yf.Ticker(ticker);today=pd.Timestamp.today().normalize();frames=[]
     for exp in list(t.options):
@@ -203,14 +203,14 @@ def chain(ticker,cfg,spot):
 def recs(ticker,x,s,g,cfg):
     if g['label']=='RED' or x.empty:return pd.DataFrame()
     sc=cfg['stocks'][ticker];n=cfg['new_cc'];b=x[(x.strike>=s['spot']*(1+sc['minimum_otm_pct']/100))&(x.openInterest.fillna(0)>=n['minimum_open_interest'])&(x.spread.fillna(999)<=n['maximum_spread_pct'])&(x.mid>0)].copy();rows=[]
-    slots=[('7–12日',n['short_dte'],n['short_delta']),('21–40日',n['medium_dte'],n['medium_delta']),('90–180日',n['long_dte'],n['long_delta'])]
-    if ticker=='AMD':slots.append(('AMD長期900+',n['long_dte'],n['long_delta']))
+    slots=[('7–12 DTE',n['short_dte'],n['short_delta']),('21–40 DTE',n['medium_dte'],n['medium_delta']),('90–180 DTE',n['long_dte'],n['long_delta'])]
+    if ticker=='AMD':slots.append(('AMD Long-Dated 900+',n['long_dte'],n['long_delta']))
     for name,dtes,deltas in slots:
         z=b[b.dte.between(*dtes)&b.delta.between(*deltas)].copy()
-        if name=='AMD長期900+':z=z[z.strike>=900]
+        if name=='AMD Long-Dated 900+':z=z[z.strike>=900]
         if z.empty:continue
         target=sum(deltas)/2;z['rank']=45*(1-(z.delta-target).abs()/max(target,.01)).clip(0,1)+30*(1-z.spread.clip(0,30)/30)+25*np.log1p(z.openInterest.fillna(0))/np.log(20000);q=z.sort_values(['rank','strike'],ascending=[False,False]).iloc[0]
-        rows.append({'用途':name,'到期日':q.expiry,'DTE':int(q.dte),'Strike':float(q.strike),'OTM %':float(q.otm),'Delta':float(q.delta),'Bid':float(q.bid),'Ask':float(q.ask),'Mid':float(q.mid),'每張Premium':float(q.mid*100),'IV %':float(q.impliedVolatility*100),'OI':int(q.openInterest or 0),'Spread %':float(q.spread)})
+        rows.append({'Use Case':name,'Expiry':q.expiry,'DTE':int(q.dte),'Strike':float(q.strike),'OTM %':float(q.otm),'Delta':float(q.delta),'Bid':float(q.bid),'Ask':float(q.ask),'Mid':float(q.mid),'Premium / Contract':float(q.mid*100),'IV %':float(q.impliedVolatility*100),'OI':int(q.openInterest or 0),'Spread %':float(q.spread)})
     return pd.DataFrame(rows)
 def manage(pos,ticker,x,spot,cfg):
     p=pos[pos.ticker.astype(str).str.upper()==ticker].copy();m=cfg['management'];actions=[];ds=[];profits=[];dtes=[]
@@ -218,9 +218,9 @@ def manage(pos,ticker,x,spot,cfg):
         if str(r.status).upper()!='OPEN':actions.append('EMPTY');ds.append(np.nan);profits.append(np.nan);dtes.append(np.nan);continue
         exp=pd.to_datetime(r.expiry,errors='coerce');strike=pd.to_numeric(r.strike,errors='coerce');credit=pd.to_numeric(r.credit_received,errors='coerce');mark=pd.to_numeric(r.current_mark,errors='coerce');dte=(exp.normalize()-pd.Timestamp.today().normalize()).days if pd.notna(exp) else np.nan;profit=(credit-mark)/credit*100 if pd.notna(credit) and credit>0 and pd.notna(mark) else np.nan;z=x[(x.expiry.astype(str)==str(exp.date()))&(x.strike==strike)] if not x.empty and pd.notna(exp) and pd.notna(strike) else pd.DataFrame();delta=float(z.iloc[0].delta) if not z.empty else np.nan
         if pd.notna(dte) and dte<=10:
-            a=f"BTC NOW｜Profit {profit:.0f}%" if pd.notna(profit) and profit>=70 else (f"CONSIDER BTC｜Profit {profit:.0f}%" if pd.notna(profit) and profit>=60 else 'HOLD｜未到60% Profit')
+            a=f"BTC NOW | Profit {profit:.0f}%" if pd.notna(profit) and profit>=70 else (f"CONSIDER BTC | Profit {profit:.0f}%" if pd.notna(profit) and profit>=60 else 'HOLD | Profit below 60%')
         elif pd.notna(dte) and 30<=dte<=180:
-            a='CHECK DELTA' if pd.isna(delta) else (f"IGNORE / HOLD｜Delta {delta:.2f}" if delta<.20 else (f"WATCH｜Delta {delta:.2f}" if delta<.30 else (f"PREPARE ROLL｜Delta {delta:.2f}" if delta<.40 else f"PRIORITY ROLL / CLOSE｜Delta {delta:.2f}")))
+            a='CHECK DELTA' if pd.isna(delta) else (f"IGNORE / HOLD | Delta {delta:.2f}" if delta<.20 else (f"WATCH | Delta {delta:.2f}" if delta<.30 else (f"PREPARE ROLL | Delta {delta:.2f}" if delta<.40 else f"PRIORITY ROLL / CLOSE | Delta {delta:.2f}")))
         else:a='WATCH'
         actions.append(a);ds.append(delta);profits.append(profit);dtes.append(dte)
     p['DTE']=dtes;p['Current Delta']=ds;p['Profit %']=profits;p['System Action']=actions;return p
@@ -247,22 +247,22 @@ def manage_pro(pos,ticker,x,spot,cfg):
     p=pos[pos.ticker.astype(str).str.upper()==ticker].copy();m=cfg['management'];rows=[]
     for _,r in p.iterrows():
         if str(r.status).upper()!='OPEN':
-            rows.append({**r.to_dict(),'Expiry (DDMMYY)':'','剩餘日數':np.nan,'Current Delta':np.nan,'Profit %':np.nan,'System Action':'EMPTY','Action Reason':'未開倉'});continue
+            rows.append({**r.to_dict(),'Expiry (DDMMYY)':'','Days Remaining':np.nan,'Current Delta':np.nan,'Profit %':np.nan,'System Action':'EMPTY','Action Reason':'Position is empty'});continue
         exp=parse_ddmmyy(r.expiry);strike=pd.to_numeric(r.strike,errors='coerce');credit=pd.to_numeric(r.credit_received,errors='coerce');mark=pd.to_numeric(r.current_mark,errors='coerce');dte=(exp.normalize()-pd.Timestamp.today().normalize()).days if pd.notna(exp) else np.nan;profit=(credit-mark)/credit*100 if pd.notna(credit) and credit>0 and pd.notna(mark) else np.nan
         z=x[(x.expiry.astype(str)==str(exp.date()))&(x.strike==strike)] if not x.empty and pd.notna(exp) and pd.notna(strike) else pd.DataFrame();delta=float(z.iloc[0].delta) if not z.empty else np.nan
         purpose=str(r.get('purpose','Income')).title();done=str(r.get('event_completed',False)).lower() in {'true','1','yes'}
         if purpose=='Trading':
             triggers=[]
-            if done:triggers.append('事件完成')
+            if done:triggers.append('Event completed')
             if pd.notna(profit) and profit>=m['trading_profit_trigger_pct']:triggers.append(f'Profit {profit:.0f}%')
             if pd.notna(delta) and delta<m['trading_delta_trigger']:triggers.append(f'Delta {delta:.2f}<0.05')
-            action='BTC NOW' if triggers else 'HOLD';reason=('Trading Alpha已完成：'+'；'.join(triggers)) if triggers else 'Trading事件仍未完成'
+            action='BTC NOW' if triggers else 'HOLD';reason=('Trading alpha completed: '+', '.join(triggers)) if triggers else 'Trading event thesis is still active'
         elif purpose=='Defensive':
-            action='CONSIDER BTC' if pd.notna(delta) and delta<.10 else 'HOLD';reason='防守目的已大致完成' if action!='HOLD' else '防守目的仍存在'
+            action='CONSIDER BTC' if pd.notna(delta) and delta<.10 else 'HOLD';reason='Defensive objective is largely complete' if action!='HOLD' else 'Defensive objective remains active'
         elif pd.notna(dte) and dte<=10:
-            action='BTC NOW' if pd.notna(profit) and profit>=70 else ('CONSIDER BTC' if pd.notna(profit) and profit>=60 else 'HOLD');reason='短期Income CC睇Profit'
+            action='BTC NOW' if pd.notna(profit) and profit>=70 else ('CONSIDER BTC' if pd.notna(profit) and profit>=60 else 'HOLD');reason='Short-dated income CC is managed by profit target'
         elif pd.notna(dte) and 30<=dte<=180:
-            action='CHECK DELTA' if pd.isna(delta) else ('IGNORE / HOLD' if delta<.20 else ('WATCH' if delta<.30 else ('PREPARE ROLL' if delta<.40 else 'PRIORITY ROLL / CLOSE')));reason=f'Income CC主要睇Delta {delta:.2f}' if pd.notna(delta) else '抓唔到Delta'
-        else:action,reason='WATCH','DTE不在主要規則範圍'
-        rows.append({**r.to_dict(),'Expiry (DDMMYY)':fmt_date(exp),'剩餘日數':dte,'Current Delta':delta,'Profit %':profit,'System Action':action,'Action Reason':reason})
+            action='CHECK DELTA' if pd.isna(delta) else ('IGNORE / HOLD' if delta<.20 else ('WATCH' if delta<.30 else ('PREPARE ROLL' if delta<.40 else 'PRIORITY ROLL / CLOSE')));reason=f'Income CC is managed primarily by Delta {delta:.2f}' if pd.notna(delta) else 'Delta is temporarily unavailable'
+        else:action,reason='WATCH','DTE is outside the primary rule set'
+        rows.append({**r.to_dict(),'Expiry (DDMMYY)':fmt_date(exp),'Days Remaining':dte,'Current Delta':delta,'Profit %':profit,'System Action':action,'Action Reason':reason})
     return pd.DataFrame(rows)
