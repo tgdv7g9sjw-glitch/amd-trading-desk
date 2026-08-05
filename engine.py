@@ -305,29 +305,77 @@ def top_recommendation(recs,result):
 
 def position_actions(df,spot,cfg):
     out = df.copy()
-    actions,pnls = [],[]
+    actions,pnls,dtes,distances = [],[],[],[]
     p = cfg["policy"]
     for _,row in out.iterrows():
         if str(row.get("status","")).upper()!="OPEN":
-            actions.append("空置");pnls.append(np.nan);continue
+            actions.append("空置")
+            pnls.append(np.nan)
+            dtes.append(np.nan)
+            distances.append(np.nan)
+            continue
+
         credit = pd.to_numeric(row.get("credit_received"),errors="coerce")
         mark = pd.to_numeric(row.get("current_mark"),errors="coerce")
         strike = pd.to_numeric(row.get("strike"),errors="coerce")
         expiry = pd.to_datetime(row.get("expiry"),errors="coerce")
         pnl = (credit-mark)/credit*100 if pd.notna(credit) and credit>0 and pd.notna(mark) else np.nan
-        dte = (expiry.normalize()-pd.Timestamp.today().normalize()).days if pd.notna(expiry) else 999
+        dte = (expiry.normalize()-pd.Timestamp.today().normalize()).days if pd.notna(expiry) else np.nan
         distance = (strike/spot-1)*100 if pd.notna(strike) else np.nan
+
         if pd.notna(pnl) and pnl>=p["take_profit_priority_pct"]:
             action=f"優先BTC｜已賺{pnl:.0f}%"
         elif pd.notna(pnl) and pnl>=p["take_profit_consider_pct"]:
             action=f"考慮BTC｜已賺{pnl:.0f}%"
         elif pd.notna(distance) and distance<=0:
             action="ITM｜立即評估Roll"
-        elif dte<=p["roll_alert_dte"] and pd.notna(distance) and distance<p["roll_alert_distance_pct"]:
-            action=f"Roll Alert｜剩{dte}日、距Strike {distance:.1f}%"
+        elif pd.notna(dte) and dte<=p["roll_alert_dte"] and pd.notna(distance) and distance<p["roll_alert_distance_pct"]:
+            action=f"Roll Alert｜剩{int(dte)}日、距Strike {distance:.1f}%"
         else:
             action="Hold"
-        actions.append(action);pnls.append(pnl)
+
+        actions.append(action)
+        pnls.append(pnl)
+        dtes.append(dte)
+        distances.append(distance)
+
+    out["DTE"]=dtes
+    out["距Strike %"]=distances
     out["浮動利潤 %"]=pnls
     out["系統建議"]=actions
     return out
+
+
+def portfolio_summary(positions,cfg,result):
+    if positions.empty:
+        open_contracts = 0
+        total_credit = 0.0
+        floating_pnl = 0.0
+    else:
+        open_mask = positions["status"].astype(str).str.upper().eq("OPEN")
+        open_contracts = int(
+            pd.to_numeric(positions.loc[open_mask,"contracts"],errors="coerce")
+            .fillna(0).sum()
+        )
+        total_credit = 0.0
+        floating_pnl = 0.0
+        for _,row in positions.loc[open_mask].iterrows():
+            contracts = pd.to_numeric(row.get("contracts"),errors="coerce")
+            credit = pd.to_numeric(row.get("credit_received"),errors="coerce")
+            mark = pd.to_numeric(row.get("current_mark"),errors="coerce")
+            if pd.notna(contracts) and pd.notna(credit):
+                total_credit += contracts*credit*100
+            if pd.notna(contracts) and pd.notna(credit) and pd.notna(mark):
+                floating_pnl += contracts*(credit-mark)*100
+
+    max_cc = int(cfg["portfolio"]["max_covered_calls"])
+    remaining_capacity = max(0,max_cc-open_contracts)
+    allowed_today = min(remaining_capacity,int(result["max_new"]))
+
+    return {
+        "open_cc":open_contracts,
+        "remaining_capacity":remaining_capacity,
+        "allowed_today":allowed_today,
+        "total_credit":total_credit,
+        "floating_pnl":floating_pnl,
+    }
