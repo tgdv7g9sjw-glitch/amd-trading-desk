@@ -1,14 +1,13 @@
-# AMD Trading Desk Pro v1 — Streamlit Cloud Fixed Build
+[README.md](https://github.com/user-attachments/files/30741092/README.md)
+# AMD Trading Desk v2 Complete
 
-This build pins tested dependency versions and should be deployed with Python 3.12.
+Upload and overwrite these files in the GitHub repository root:
+- app.py
+- engine.py
+- requirements.txt
+- config.yaml
+- .streamlit/config.toml
+- data/positions.csv
+- data/journal.csv
 
-## Deploy settings
-
-- Repository: `tgdv7g9sjw-glitch/amd-trading-desk`
-- Branch: `main`
-- Main file path: `app.py`
-- Advanced settings → Python version: `3.12`
-
-## Important
-
-If an older app was created with Python 3.14, delete that app and redeploy it. Streamlit Community Cloud does not let you change the Python version of an existing deployment in place.
+After Commit, Streamlit should redeploy automatically.
