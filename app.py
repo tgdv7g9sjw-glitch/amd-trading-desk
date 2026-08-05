@@ -53,7 +53,7 @@ elif page=='Stocks':
  t=st.selectbox('股票',list(cfg['stocks']))
  s,g,x,r,err,ts=load(t,cfg);icon={'GREEN':'🟢','YELLOW':'🟡','RED':'🔴'}[g['label']]
  st.markdown(f"<div class='hero'><div>{t} · {s['session']} · {ts:%d%m%y %H:%M}</div><div class='big'>{icon} {g['label']} · {g['score']}/100</div><div>{g['action']}</div></div>",unsafe_allow_html=True)
- a,b,c,d,e=st.columns(5);a.metric('即時/盤前',f"${s['spot']:.2f}",f"{s['day_pct']:+.2f}%");b.metric('RSI',f"{s['rsi']:.1f}");c.metric('VIX',f"{s['vix']:.1f}");d.metric('距60日高',f"{s['dist_high_pct']:.1f}%");e.metric('報價Age',f"{s['quote_age_minutes']:.0f}分")
+ a,b,c,d,e=st.columns(5);a.metric('即時／盤前',f"${s['spot']:.2f}",f"{s['day_pct']:+.2f}% vs {s.get('reference_close_label','收市')}");b.metric('RSI',f"{s['rsi']:.1f}");c.metric('VIX',f"{s['vix']:.1f}");d.metric('距60日高',f"{s['dist_high_pct']:.1f}%");e.metric('報價Age',f"{s['quote_age_minutes']:.0f}分")
  tabs=st.tabs(['New CC','Existing CC','Open / Close Trade','Why'])
  with tabs[0]:
   if err:st.warning(err)
