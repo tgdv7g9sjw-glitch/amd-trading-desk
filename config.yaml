@@ -1,0 +1,38 @@
+ticker: AMD
+benchmark: QQQ
+sector_etf: SMH
+vix_ticker: ^VIX
+
+portfolio:
+  leaps_contracts: 5
+  max_covered_calls: 4
+  reserve_uncovered_leaps: 1
+  monthly_premium_target_low: 3000
+  monthly_premium_target_high: 5000
+
+policy:
+  minimum_otm_pct: 20
+  protected_strike: 900
+  short_dte: [7, 12]
+  medium_dte: [21, 40]
+  long_dte: [90, 240]
+  preferred_short_delta: [0.08, 0.18]
+  preferred_medium_delta: [0.07, 0.16]
+  preferred_long_delta: [0.04, 0.12]
+  minimum_open_interest: 10
+  maximum_bid_ask_spread_pct: 30
+  take_profit_consider_pct: 40
+  take_profit_priority_pct: 60
+  roll_alert_distance_pct: 7
+  roll_alert_dte: 10
+
+risk:
+  hard_red_daily_drop_pct: -7
+  strong_rise_pct: 5
+  vix_jump_pct: 10
+  rsi_hot: 68
+  rsi_very_hot: 75
+  post_earnings_freeze_days: 2
+
+manual:
+  next_earnings_date: ""
