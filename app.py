@@ -128,6 +128,23 @@ def load(t,c):
 def save_all():
  pos.to_csv(pos_path,index=False);journal.to_csv(journal_path,index=False)
 
+def normalize_recommendation_columns(df):
+    """Support both legacy Chinese and current English engine column names."""
+    if df is None:
+        return pd.DataFrame()
+    out = df.copy()
+    aliases = {
+        '到期日': 'Expiry',
+        '用途': 'Use Case',
+        '每張Premium': 'Premium / Contract',
+        '每Premium': 'Premium / Contract',
+        'Premium': 'Premium / Contract',
+    }
+    for old, new in aliases.items():
+        if old in out.columns and new not in out.columns:
+            out = out.rename(columns={old: new})
+    return out
+
 page=st.sidebar.radio('Navigation',['Overview','Stocks','Journal','Settings'])
 if st.sidebar.button('🔄 Refresh All Data',use_container_width=True):st.cache_data.clear();st.rerun()
 
@@ -153,7 +170,7 @@ if page=='Overview':
 
 elif page=='Stocks':
  t=st.selectbox('Stock',list(cfg['stocks']))
- s,g,x,r,err,ts=load(t,cfg);icon={'GREEN':'🟢','YELLOW':'🟡','RED':'🔴'}[g['label']]
+ s,g,x,r,err,ts=load(t,cfg);r=normalize_recommendation_columns(r);icon={'GREEN':'🟢','YELLOW':'🟡','RED':'🔴'}[g['label']]
  st.markdown(f"<div class='hero'><div>{t} · {s['session']} · {ts:%d%m%y %H:%M}</div><div class='big'>{icon} {g['label']} · {g['score']}/100</div><div>{g['action']}</div></div>",unsafe_allow_html=True)
  a,b,c,d,e=st.columns(5);a.metric('Live / Extended',f"${s['spot']:.2f}",f"{s['day_pct']:+.2f}% vs {s.get('reference_close_label','Close')}");b.metric('RSI',f"{s['rsi']:.1f}");c.metric('VIX',f"{s['vix']:.1f}");d.metric('Distance to 60D High',f"{s['dist_high_pct']:.1f}%");e.metric('Quote Age',f"{s['quote_age_minutes']:.0f} min")
  tabs=st.tabs(['New CC','Existing CC','Open / Close Trade','Why'])
@@ -161,11 +178,25 @@ elif page=='Stocks':
   if err:st.warning(err)
   elif r.empty:st.warning('No contract currently meets the Delta, OTM and liquidity rules.')
   else:
-   vv=r.copy();vv['Expiry']=vv['Expiry'].apply(fmt_date)
-   for _,q in vv.head(g['max_new']).iterrows():
-    reason=f"Delta {q['Delta']:.2f}fits the strategy; OTM {q['OTM %']:.1f}%；Spread {q['Spread %']:.1f}%；OI {q['OI']}"
-    st.markdown(f"<div class='box'><h3>APPROVE：{q['Expiry']} ${q['Strike']:.0f}C</h3><p>DTE {q['DTE']} · Delta {q['Delta']:.2f} · Premium約 ${q['每Premium']:.0f}</p><p><b>Reason: </b>{reason}</p></div>",unsafe_allow_html=True)
-   st.dataframe(vv,hide_index=True,use_container_width=True)
+   vv=normalize_recommendation_columns(r)
+   required={'Expiry','Strike','DTE','Delta','OTM %','Spread %','OI','Premium / Contract'}
+   missing=required.difference(vv.columns)
+   if missing:
+    st.error("Recommendation data is missing required fields: " + ", ".join(sorted(missing)))
+    st.caption("Refresh the app after both app.py and engine.py have finished deploying.")
+   else:
+    vv['Expiry']=vv['Expiry'].apply(fmt_date)
+    for _,q in vv.head(g['max_new']).iterrows():
+     reason=(f"Delta {q['Delta']:.2f} fits the strategy; "
+             f"OTM {q['OTM %']:.1f}%; Spread {q['Spread %']:.1f}%; OI {int(q['OI'])}")
+     st.markdown(
+      f"<div class='box'><h3>APPROVE: {q['Expiry']} ${q['Strike']:.0f}C</h3>"
+      f"<p>DTE {int(q['DTE'])} · Delta {q['Delta']:.2f} · "
+      f"Premium approximately ${q['Premium / Contract']:.0f}</p>"
+      f"<p><b>Reason:</b> {reason}</p></div>",
+      unsafe_allow_html=True
+     )
+    st.dataframe(vv,hide_index=True,use_container_width=True)
  with tabs[1]:
   managed=manage_pro(pos,t,x,s['spot'],cfg);show=['position_id','purpose','strategy_tag','reason','Expiry (DDMMYY)','Days Remaining','strike','contracts','Profit %','Current Delta','System Action','Action Reason']
   st.dataframe(managed[[z for z in show if z in managed]],hide_index=True,use_container_width=True)
