@@ -12,33 +12,146 @@ def delta_est(s,k,t,r,iv):
     d1=(log(s/k)+(r+iv*iv/2)*t)/(iv*sqrt(t));return cdf(d1)
 def hist(symbol):
     d=yf.Ticker(symbol).history(period="1y",auto_adjust=True)
-    if d.empty: raise RuntimeError(f"{symbol} no data")
+    if d.empty:
+        raise RuntimeError(f"{symbol} no data")
     return d
-def session():
-    n=datetime.now(NY);t=n.time()
-    if n.weekday()>=5:return "CLOSED"
-    if time(4)<=t<time(9,30):return "PRE-MARKET"
-    if time(9,30)<=t<time(16):return "REGULAR"
-    if time(16)<=t<time(20):return "AFTER-HOURS"
+
+def session(now=None):
+    n=now or datetime.now(NY)
+    t=n.time()
+    if n.weekday()>=5:
+        return "CLOSED"
+    if time(4)<=t<time(9,30):
+        return "PRE-MARKET"
+    if time(9,30)<=t<time(16):
+        return "REGULAR"
+    if time(16)<=t<time(20):
+        return "AFTER-HOURS"
     return "CLOSED"
-def quote(symbol,close):
-    price=np.nan;qt=None;src="daily fallback"
+
+def completed_daily_bars(daily):
+    """Exclude today's unfinished daily candle during regular trading."""
+    if daily.empty:
+        return daily
+    now=datetime.now(NY)
+    idx=pd.DatetimeIndex(daily.index)
+    if idx.tz is None:
+        last_date=idx[-1].date()
+    else:
+        last_date=idx[-1].tz_convert(NY).date()
+    if session(now)=="REGULAR" and last_date==now.date() and len(daily)>=2:
+        return daily.iloc[:-1].copy()
+    return daily.copy()
+
+def reference_close(daily):
+    """
+    Correct comparison base:
+    PRE/REGULAR -> previous completed regular-session close.
+    AFTER-HOURS -> today's completed close.
+    CLOSED -> latest completed close.
+    """
+    if daily.empty:
+        raise RuntimeError("No daily data")
+    now=datetime.now(NY)
+    current_session=session(now)
+    idx=pd.DatetimeIndex(daily.index)
+    last_date=(idx[-1].date() if idx.tz is None else idx[-1].tz_convert(NY).date())
+
+    if current_session=="REGULAR" and last_date==now.date() and len(daily)>=2:
+        return float(daily["Close"].iloc[-2]), "Previous close"
+    return float(daily["Close"].iloc[-1]), (
+        "Today close" if current_session=="AFTER-HOURS" and last_date==now.date()
+        else "Previous close"
+    )
+
+def quote(symbol,daily):
+    base_close,base_label=reference_close(daily)
+    price=np.nan
+    qt=None
+    src="daily fallback"
     try:
-        d=yf.Ticker(symbol).history(period="5d",interval="1m",prepost=True,auto_adjust=False).dropna(subset=["Close"])
-        if not d.empty: price=float(d.Close.iloc[-1]);qt=pd.Timestamp(d.index[-1]).to_pydatetime();src="1m extended-hours"
-    except Exception: pass
-    if not np.isfinite(price): price=close;qt=datetime.now(NY)
+        d=yf.Ticker(symbol).history(
+            period="5d",interval="1m",prepost=True,auto_adjust=False
+        ).dropna(subset=["Close"])
+        if not d.empty:
+            price=float(d.Close.iloc[-1])
+            qt=pd.Timestamp(d.index[-1]).to_pydatetime()
+            src="1m extended-hours"
+    except Exception:
+        pass
+
+    if not np.isfinite(price):
+        try:
+            candidate=getattr(yf.Ticker(symbol).fast_info,"last_price",None)
+            if candidate is not None:
+                price=float(candidate)
+                qt=datetime.now(NY)
+                src="fast_info"
+        except Exception:
+            pass
+
+    if not np.isfinite(price):
+        price=base_close
+        qt=datetime.now(NY)
+
     qt=qt.replace(tzinfo=NY) if qt.tzinfo is None else qt.astimezone(NY)
     age=max(0,(datetime.now(NY)-qt).total_seconds()/60)
-    return dict(spot=price,regular_close=close,day_pct=(price/close-1)*100,session=session(),quote_time_ny=qt,quote_age_minutes=age,quote_source=src,is_stale=age>20)
+
+    return dict(
+        spot=price,
+        regular_close=base_close,
+        reference_close_label=base_label,
+        day_pct=(price/base_close-1)*100 if base_close else np.nan,
+        session=session(),
+        quote_time_ny=qt,
+        quote_age_minutes=age,
+        quote_source=src,
+        is_stale=age>20 and session() in {"PRE-MARKET","REGULAR","AFTER-HOURS"},
+    )
+
 def snapshot(ticker,cfg):
-    s=cfg["stocks"][ticker];stock=hist(ticker);bench=hist(s["benchmark"]);sector=hist(s["sector_etf"]);vix=hist(cfg["vix_ticker"])
-    c=stock.Close;diff=c.diff();g=diff.clip(lower=0).ewm(alpha=1/14,adjust=False).mean();l=(-diff.clip(upper=0)).ewm(alpha=1/14,adjust=False).mean();rsi=100-100/(1+g/l.replace(0,np.nan));e20=c.ewm(span=20,adjust=False).mean();e50=c.ewm(span=50,adjust=False).mean();ret=c.pct_change();run=0
+    s=cfg["stocks"][ticker]
+    stock_raw=hist(ticker)
+    stock=completed_daily_bars(stock_raw)
+    bench=completed_daily_bars(hist(s["benchmark"]))
+    sector=completed_daily_bars(hist(s["sector_etf"]))
+    vix=completed_daily_bars(hist(cfg["vix_ticker"]))
+
+    c=stock.Close
+    diff=c.diff()
+    g=diff.clip(lower=0).ewm(alpha=1/14,adjust=False).mean()
+    l=(-diff.clip(upper=0)).ewm(alpha=1/14,adjust=False).mean()
+    rsi=100-100/(1+g/l.replace(0,np.nan))
+    e20=c.ewm(span=20,adjust=False).mean()
+    e50=c.ewm(span=50,adjust=False).mean()
+    ret=c.pct_change()
+    run=0
     for x in ret.dropna().iloc[::-1]:
-        if x>0:run+=1
-        else:break
-    q=quote(ticker,float(c.iloc[-1]))
-    return {**q,'ticker':ticker,'week_pct':float(c.pct_change(5).iloc[-1]*100),'rsi':float(rsi.iloc[-1]),'ema20':float(e20.iloc[-1]),'ema50':float(e50.iloc[-1]),'dist_high_pct':float((stock.High.tail(60).max()/q['spot']-1)*100),'benchmark_trend':bool(bench.Close.iloc[-1]>bench.Close.ewm(span=20,adjust=False).mean().iloc[-1]),'sector_trend':bool(sector.Close.iloc[-1]>sector.Close.ewm(span=20,adjust=False).mean().iloc[-1]),'vix':float(vix.Close.iloc[-1]),'vix_day_pct':float(vix.Close.pct_change().iloc[-1]*100),'up_run':run,'history':stock.assign(EMA20=e20,EMA50=e50)}
+        if x>0:
+            run+=1
+        else:
+            break
+
+    q=quote(ticker,stock_raw)
+    return {
+        **q,
+        'ticker':ticker,
+        'week_pct':float(c.pct_change(5).iloc[-1]*100),
+        'rsi':float(rsi.iloc[-1]),
+        'ema20':float(e20.iloc[-1]),
+        'ema50':float(e50.iloc[-1]),
+        'dist_high_pct':float((stock.High.tail(60).max()/q['spot']-1)*100),
+        'benchmark_trend':bool(
+            bench.Close.iloc[-1]>bench.Close.ewm(span=20,adjust=False).mean().iloc[-1]
+        ),
+        'sector_trend':bool(
+            sector.Close.iloc[-1]>sector.Close.ewm(span=20,adjust=False).mean().iloc[-1]
+        ),
+        'vix':float(vix.Close.iloc[-1]),
+        'vix_day_pct':float(vix.Close.pct_change().iloc[-1]*100),
+        'up_run':run,
+        'history':stock.assign(EMA20=e20,EMA50=e50),
+    }
 def earnings(ticker,cfg):
     m=str(cfg.get('manual_earnings',{}).get(ticker,'') or '').strip()
     if m:return pd.Timestamp(m).date()
