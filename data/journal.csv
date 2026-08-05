@@ -1,1 +1,1 @@
-date,action,expiry,strike,contracts,credit,debit,realized_pnl,grade,score,reason,notes
+trade_id,open_date,close_date,ticker,expiry,strike,contracts,purpose,strategy_tag,reason,credit_received,debit_paid,realized_pnl,status,entry_grade,entry_score,notes
